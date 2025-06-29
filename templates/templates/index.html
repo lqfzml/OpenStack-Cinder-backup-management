@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenStack Cinder 备份管理</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .status-available { color: #28a745; }
+        .status-in-use { color: #007bff; }
+        .status-error { color: #dc3545; }
+        .status-creating { color: #ffc107; }
+        .status-deleting { color: #6c757d; }
+        .backup-full { background-color: #e3f2fd; }
+        .backup-incremental { background-color: #f3e5f5; }
+        .schedule-enabled { color: #28a745; }
+        .schedule-disabled { color: #6c757d; }
+        .loading {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+        }
+        .loading-content {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .table-responsive {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .nav-tabs .nav-link {
+            color: #495057;
+        }
+        .nav-tabs .nav-link.active {
+            color: #007bff;
+            font-weight: bold;
+        }
+        .weekday-checkbox {
+            margin-right: 10px;
+        }
+        .weekday-label {
+            margin-right: 15px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid mt-3">
+        <h1 class="text-center mb-4">
+            <i class="bi bi-cloud-arrow-up"></i>
+            OpenStack Cinder 备份管理
+        </h1>
+
+        <!-- 状态栏 -->
+        <div class="row mb-3">
+            <div class="col-md-12">
+                <div class="alert alert-info" id="statusBar">
+                    <i class="bi bi-info-circle"></i>
+                    <span id="statusText">正在检查系统状态...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div class="row mb-3">
+            <div class="col-md-12">
+                <div class="btn-group" role="group">
+                    <button type="button" class="btn btn-primary" onclick="createBackup('full')">
+                        <i class="bi bi-download"></i> 全量备份
+                    </button>
+                    <button type="button" class="btn btn-success" onclick="createBackup('incremental')">
+                        <i class="bi bi-arrow-clockwise"></i> 增量备份
+                    </button>
+                    <button type="button" class="btn btn-info" onclick="showScheduleModal()">
+                        <i class="bi bi-clock"></i> 定时备份
+                    </button>
+                    <button type="button" class="btn btn-warning" onclick="showCleanupModal()">
+                        <i class="bi bi-trash"></i> 清理备份
+                    </button>
+                    <button type="button" class="btn btn-secondary" onclick="refreshData()">
+                        <i class="bi bi-arrow-clockwise"></i> 刷新
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 云硬盘列表 -->
+        <div class="row mb-4">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="bi bi-hdd"></i> 云硬盘列表 (显示所有状态，✓ 标记可备份)</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>
+                                            <input type="checkbox" id="selectAllVolumes" onchange="toggleSelectAll('volumes')">
+                                        </th>
+                                        <th>ID</th>
+                                        <th>名称</th>
+                                        <th>大小 (GB)</th>
+                                        <th>状态</th>
+                                        <th>创建时间</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="volumesTableBody">
+                                    <tr>
+                                        <td colspan="6" class="text-center">正在加载...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 备份列表 - 使用标签页分离全量备份和增量备份 -->
+        <div class="row mb-4">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-header">
+                        <ul class="nav nav-tabs card-header-tabs" id="backupTabs" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link active" id="full-tab" data-bs-toggle="tab" data-bs-target="#full-backups" type="button" role="tab">
+                                    <i class="bi bi-download"></i> 全量备份
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="incremental-tab" data-bs-toggle="tab" data-bs-target="#incremental-backups" type="button" role="tab">
+                                    <i class="bi bi-arrow-clockwise"></i> 增量备份
+                                </button>
+                            </li>
+                        </ul>
+                    </div>
+                    <div class="card-body">
+                        <div class="tab-content" id="backupTabContent">
+                            <!-- 全量备份列表 -->
+                            <div class="tab-pane fade show active" id="full-backups" role="tabpanel">
+                                <div class="table-responsive">
+                                    <table class="table table-striped table-hover">
+                                        <thead class="table-primary">
+                                            <tr>
+                                                <th>ID</th>
+                                                <th>名称</th>
+                                                <th>云硬盘ID</th>
+                                                <th>大小 (GB)</th>
+                                                <th>状态</th>
+                                                <th>创建时间</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="fullBackupsTableBody">
+                                            <tr>
+                                                <td colspan="7" class="text-center">正在加载...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            
+                            <!-- 增量备份列表 -->
+                            <div class="tab-pane fade" id="incremental-backups" role="tabpanel">
+                                <div class="table-responsive">
+                                    <table class="table table-striped table-hover">
+                                        <thead class="table-success">
+                                            <tr>
+                                                <th>ID</th>
+                                                <th>名称</th>
+                                                <th>云硬盘ID</th>
+                                                <th>大小 (GB)</th>
+                                                <th>状态</th>
+                                                <th>创建时间</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="incrementalBackupsTableBody">
+                                            <tr>
+                                                <td colspan="7" class="text-center">正在加载...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 定时备份列表 -->
+        <div class="row">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="bi bi-clock"></i> 定时备份列表</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover">
+                                <thead class="table-info">
+                                    <tr>
+                                        <th>名称</th>
+                                        <th>备份类型</th>
+                                        <th>云硬盘数量</th>
+                                        <th>执行时间</th>
+                                        <th>状态</th>
+                                        <th>创建时间</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="schedulesTableBody">
+                                    <tr>
+                                        <td colspan="7" class="text-center">正在加载...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 加载动画 -->
+    <div class="loading" id="loading">
+        <div class="loading-content">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2">正在处理，请稍候...</p>
+        </div>
+    </div>
+
+    <!-- 消息模态框 -->
+    <div class="modal fade" id="messageModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="modalTitle">消息</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="modalBody">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 定时备份创建模态框 -->
+    <div class="modal fade" id="scheduleModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">创建定时备份</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="scheduleForm">
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="scheduleName" class="form-label">定时备份名称</label>
+                                <input type="text" class="form-control" id="scheduleName" placeholder="输入定时备份名称">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="backupType" class="form-label">备份类型</label>
+                                <select class="form-select" id="backupType">
+                                    <option value="full">全量备份</option>
+                                    <option value="incremental">增量备份</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="scheduleType" class="form-label">执行频率</label>
+                                <select class="form-select" id="scheduleType" onchange="toggleWeekdays()">
+                                    <option value="daily">每日执行</option>
+                                    <option value="weekly">每周执行</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="scheduleTime" class="form-label">执行时间</label>
+                                <input type="time" class="form-control" id="scheduleTime" value="02:00">
+                            </div>
+                        </div>
+                        
+                        <div class="row mb-3" id="weekdaysSection" style="display: none;">
+                            <div class="col-md-12">
+                                <label class="form-label">选择星期</label>
+                                <div>
+                                    <input type="checkbox" class="weekday-checkbox" id="weekday1" value="1">
+                                    <label class="weekday-label" for="weekday1">周一</label>
+                                    
+                                    <input type="checkbox" class="weekday-checkbox" id="weekday2" value="2">
+                                    <label class="weekday-label" for="weekday2">周二</label>
+                                    
+                                    <input type="checkbox" class="weekday-checkbox" id="weekday3" value="3">
+                                    <label class="weekday-label" for="weekday3">周三</label>
+                                    
+                                    <input type="checkbox" class="weekday-checkbox" id="weekday4" value="4">
+                                    <label class="weekday-label" for="weekday4">周四</label>
+                                    
+                                    <input type="checkbox" class="weekday-checkbox" id="weekday5" value="5">
+                                    <label class="weekday-label" for="weekday5">周五</label>
+                                    
+                                    <input type="checkbox" class="weekday-checkbox" id="weekday6" value="6">
+                                    <label class="weekday-label" for="weekday6">周六</label>
+                                    
+                                    <input type="checkbox" class="weekday-checkbox" id="weekday7" value="7">
+                                    <label class="weekday-label" for="weekday7">周日</label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">选择云硬盘</label>
+                            <div id="scheduleVolumeList" class="border p-3" style="max-height: 200px; overflow-y: auto;">
+                                <div class="text-center text-muted">正在加载云硬盘列表...</div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="createSchedule()">创建定时备份</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 清理备份模态框 -->
+    <div class="modal fade" id="cleanupModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">清理备份</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="cleanupForm">
+                        <!-- 清理模式选择 -->
+                        <div class="mb-3">
+                            <label class="form-label">清理模式</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="cleanupMode" id="cleanupModeGlobal" value="global" checked>
+                                <label class="form-check-label" for="cleanupModeGlobal">
+                                    统一清理策略
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="cleanupMode" id="cleanupModeVolume" value="volume">
+                                <label class="form-check-label" for="cleanupModeVolume">
+                                    按云硬盘制定策略
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <!-- 统一清理策略 -->
+                        <div id="globalCleanupSection">
+                            <div class="mb-3">
+                                <label for="retentionDays" class="form-label">保留天数</label>
+                                <input type="number" class="form-control" id="retentionDays" 
+                                       value="30" min="1" max="365" 
+                                       placeholder="输入保留天数（1-365天）">
+                                <div class="form-text">超过指定天数的备份将被自动删除</div>
+                            </div>
+                        </div>
+                        
+                        <!-- 按云硬盘清理策略 -->
+                        <div id="volumeCleanupSection" style="display: none;">
+                            <div class="mb-3">
+                                <label class="form-label">按云硬盘制定清理策略</label>
+                                <div class="alert alert-info">
+                                    <i class="bi bi-info-circle"></i>
+                                    为不同的云硬盘设置不同的保留天数，未设置的云硬盘将使用默认30天
+                                </div>
+                                <div id="volumePoliciesList" class="border p-3" style="max-height: 300px; overflow-y: auto;">
+                                    <div class="text-center text-muted">正在加载云硬盘列表...</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="alert alert-warning">
+                            <i class="bi bi-exclamation-triangle"></i>
+                            <strong>警告：</strong>此操作将永久删除超过指定天数的备份，无法恢复！
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-danger" onclick="cleanupBackups()">确认清理</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 定时备份管理模态框 -->
+    <div class="modal fade" id="scheduleManageModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">管理定时备份云硬盘</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <h6>当前云硬盘列表</h6>
+                            <div id="currentVolumesList" class="border p-3" style="max-height: 200px; overflow-y: auto;">
+                                <div class="text-center text-muted">正在加载...</div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>可添加的云硬盘</h6>
+                            <div id="availableVolumesList" class="border p-3" style="max-height: 200px; overflow-y: auto;">
+                                <div class="text-center text-muted">正在加载...</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <button type="button" class="btn btn-success btn-sm" onclick="addVolumesToSchedule()">
+                                <i class="bi bi-plus-circle"></i> 添加选中云硬盘
+                            </button>
+                        </div>
+                        <div class="col-md-6">
+                            <button type="button" class="btn btn-danger btn-sm" onclick="removeVolumesFromSchedule()">
+                                <i class="bi bi-dash-circle"></i> 移除选中云硬盘
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/main.js"></script>
+</body>
+</html>
