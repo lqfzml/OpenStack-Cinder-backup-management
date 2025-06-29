@@ -1,0 +1,15 @@
+# OpenStack 认证配置
+OS_AUTH_URL=http://your-openstack-auth-url:5000/v3
+OS_USERNAME=your_user
+OS_PASSWORD=your_password
+OS_PROJECT_NAME=your_project
+OS_USER_DOMAIN_NAME=Default
+OS_PROJECT_DOMAIN_NAME=Default
+
+# 备份策略配置
+FULL_BACKUP_RETENTION=4
+INCREMENTAL_BACKUP_RETENTION=6
+
+# Flask 配置
+SECRET_KEY=your-secret-key-here
+DEBUG=True 
