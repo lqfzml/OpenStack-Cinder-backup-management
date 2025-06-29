@@ -2,6 +2,9 @@
 let volumes = [];
 let backups = { full_backups: [], incremental_backups: [], all_backups: [] };
 let schedules = [];
+let serverSnapshots = [];
+let volumeSnapshots = [];
+let servers = [];
 
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', function() {
@@ -42,7 +45,10 @@ async function loadData() {
     await Promise.all([
         loadVolumes(),
         loadBackups(),
-        loadSchedules()
+        loadSchedules(),
+        loadServerSnapshots(),
+        loadVolumeSnapshots(),
+        loadServers()
     ]);
 }
 
@@ -82,6 +88,40 @@ async function loadSchedules() {
     } catch (error) {
         console.error('加载定时备份失败:', error);
         showMessage('错误', '加载定时备份列表失败: ' + error.message);
+    }
+}
+
+// 加载云主机快照列表
+async function loadServerSnapshots() {
+    try {
+        const response = await fetch('/api/server-snapshots');
+        serverSnapshots = await response.json();
+        renderServerSnapshotsTable();
+    } catch (error) {
+        console.error('加载云主机快照列表失败:', error);
+        showMessage('错误', '加载云主机快照列表失败: ' + error.message);
+    }
+}
+
+// 加载云硬盘快照列表
+async function loadVolumeSnapshots() {
+    try {
+        const response = await fetch('/api/volume-snapshots');
+        volumeSnapshots = await response.json();
+        renderVolumeSnapshotsTable();
+    } catch (error) {
+        console.error('加载云硬盘快照列表失败:', error);
+        showMessage('错误', '加载云硬盘快照列表失败: ' + error.message);
+    }
+}
+
+// 加载云主机列表
+async function loadServers() {
+    try {
+        const response = await fetch('/api/servers');
+        servers = await response.json();
+    } catch (error) {
+        console.error('加载云主机列表失败:', error);
     }
 }
 
@@ -176,45 +216,100 @@ function renderBackupsTables() {
 // 渲染定时备份表格
 function renderSchedulesTable() {
     const tbody = document.getElementById('schedulesTableBody');
-    
     if (schedules.length === 0) {
         tbody.innerHTML = '<tr><td colspan="7" class="text-center">暂无定时备份</td></tr>';
         return;
     }
-    
-    tbody.innerHTML = schedules.map(schedule => `
-        <tr>
-            <td>${schedule.name || '未命名'}</td>
-            <td>
-                <span class="badge bg-${schedule.backup_type === 'full' ? 'primary' : 'success'}">
-                    ${schedule.backup_type === 'full' ? '全量备份' : '增量备份'}
-                </span>
-            </td>
-            <td>${schedule.volume_ids.length}</td>
-            <td>${formatScheduleTime(schedule)}</td>
-            <td>
-                <span class="badge bg-${schedule.enabled ? 'success' : 'secondary'}">
-                    ${schedule.enabled ? '启用' : '禁用'}
-                </span>
-            </td>
-            <td>${formatDateTime(schedule.created_at)}</td>
-            <td>
-                <div class="btn-group btn-group-sm" role="group">
-                    <button class="btn btn-outline-info" onclick="manageScheduleVolumes('${schedule.id}')" title="管理云硬盘">
-                        <i class="bi bi-gear"></i>
-                    </button>
-                    <button class="btn btn-outline-${schedule.enabled ? 'warning' : 'success'}" 
-                            onclick="toggleSchedule('${schedule.id}')" 
-                            title="${schedule.enabled ? '禁用' : '启用'}">
-                        <i class="bi bi-${schedule.enabled ? 'pause' : 'play'}"></i>
-                    </button>
-                    <button class="btn btn-outline-danger" onclick="deleteSchedule('${schedule.id}')" title="删除">
-                        <i class="bi bi-trash"></i>
-                    </button>
-                </div>
-            </td>
-        </tr>
-    `).join('');
+
+    tbody.innerHTML = schedules.map(schedule => {
+        const volumeCount = schedule.volume_ids ? schedule.volume_ids.length : 0;
+        const statusClass = schedule.enabled ? 'schedule-enabled' : 'schedule-disabled';
+        const statusText = schedule.enabled ? '启用' : '禁用';
+        
+        return `
+            <tr>
+                <td>${schedule.name || '未命名'}</td>
+                <td>${schedule.backup_type === 'full' ? '全量备份' : '增量备份'}</td>
+                <td>${volumeCount}</td>
+                <td>${schedule.schedule_type === 'daily' ? '每日' : '每周'} ${schedule.schedule_time}</td>
+                <td><span class="${statusClass}">${statusText}</span></td>
+                <td>${formatDateTime(schedule.created_at)}</td>
+                <td>
+                    <div class="btn-group btn-group-sm" role="group">
+                        <button type="button" class="btn btn-outline-primary" onclick="toggleSchedule('${schedule.id}')">
+                            <i class="bi bi-${schedule.enabled ? 'pause' : 'play'}"></i>
+                        </button>
+                        <button type="button" class="btn btn-outline-info" onclick="manageScheduleVolumes('${schedule.id}')">
+                            <i class="bi bi-gear"></i>
+                        </button>
+                        <button type="button" class="btn btn-outline-danger" onclick="deleteSchedule('${schedule.id}')">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+// 渲染云主机快照表格
+function renderServerSnapshotsTable() {
+    const tbody = document.getElementById('serverSnapshotsTableBody');
+    if (serverSnapshots.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center">暂无云主机快照</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = serverSnapshots.map(snapshot => {
+        const statusClass = getStatusClass(snapshot.status);
+        return `
+            <tr>
+                <td>${snapshot.id}</td>
+                <td>${snapshot.name || '未命名'}</td>
+                <td>${snapshot.server_id}</td>
+                <td>${snapshot.size || 0}</td>
+                <td><span class="${statusClass}">${snapshot.status}</span></td>
+                <td>${formatDateTime(snapshot.created_at)}</td>
+                <td>
+                    <div class="btn-group btn-group-sm" role="group">
+                        <button type="button" class="btn btn-outline-danger" onclick="deleteServerSnapshot('${snapshot.id}')">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+// 渲染云硬盘快照表格
+function renderVolumeSnapshotsTable() {
+    const tbody = document.getElementById('volumeSnapshotsTableBody');
+    if (volumeSnapshots.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center">暂无云硬盘快照</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = volumeSnapshots.map(snapshot => {
+        const statusClass = getStatusClass(snapshot.status);
+        return `
+            <tr>
+                <td>${snapshot.id}</td>
+                <td>${snapshot.name || '未命名'}</td>
+                <td>${snapshot.volume_id}</td>
+                <td>${snapshot.size || 0}</td>
+                <td><span class="${statusClass}">${snapshot.status}</span></td>
+                <td>${formatDateTime(snapshot.created_at)}</td>
+                <td>
+                    <div class="btn-group btn-group-sm" role="group">
+                        <button type="button" class="btn btn-outline-danger" onclick="deleteVolumeSnapshot('${snapshot.id}')">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
 }
 
 // 创建备份
@@ -852,4 +947,238 @@ function showMessage(title, message) {
     document.getElementById('modalTitle').textContent = title;
     document.getElementById('modalBody').textContent = message;
     modal.show();
+}
+
+// 显示快照清理模态框
+function showSnapshotCleanupModal() {
+    const modal = new bootstrap.Modal(document.getElementById('snapshotCleanupModal'));
+    modal.show();
+}
+
+// 创建云主机快照
+function createServerSnapshot() {
+    // 加载云主机列表到模态框
+    const serverList = document.getElementById('serverSnapshotList');
+    if (servers.length === 0) {
+        serverList.innerHTML = '<div class="text-center text-muted">暂无云主机</div>';
+    } else {
+        serverList.innerHTML = servers.map(server => `
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" value="${server.id}" id="server_${server.id}">
+                <label class="form-check-label" for="server_${server.id}">
+                    ${server.name} (${server.id}) - ${server.status}
+                </label>
+            </div>
+        `).join('');
+    }
+    
+    const modal = new bootstrap.Modal(document.getElementById('serverSnapshotModal'));
+    modal.show();
+}
+
+// 确认创建云主机快照
+function createServerSnapshotConfirm() {
+    const selectedServers = Array.from(document.querySelectorAll('#serverSnapshotList input:checked'))
+        .map(input => input.value);
+    
+    if (selectedServers.length === 0) {
+        showMessage('错误', '请选择要创建快照的云主机');
+        return;
+    }
+    
+    const name = document.getElementById('serverSnapshotName').value;
+    const description = document.getElementById('serverSnapshotDescription').value;
+    
+    showLoading();
+    
+    fetch('/api/server-snapshots', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            server_ids: selectedServers,
+            name: name,
+            description: description
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        hideLoading();
+        if (data.success) {
+            showMessage('成功', data.message);
+            bootstrap.Modal.getInstance(document.getElementById('serverSnapshotModal')).hide();
+            refreshData();
+        } else {
+            showMessage('错误', data.error || '创建云主机快照失败');
+        }
+    })
+    .catch(error => {
+        hideLoading();
+        showMessage('错误', '创建云主机快照失败: ' + error.message);
+    });
+}
+
+// 创建云硬盘快照
+function createVolumeSnapshot() {
+    // 加载云硬盘列表到模态框
+    const volumeList = document.getElementById('volumeSnapshotList');
+    if (volumes.length === 0) {
+        volumeList.innerHTML = '<div class="text-center text-muted">暂无云硬盘</div>';
+    } else {
+        volumeList.innerHTML = volumes.map(volume => `
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" value="${volume.id}" id="volume_${volume.id}">
+                <label class="form-check-label" for="volume_${volume.id}">
+                    ${volume.name} (${volume.id}) - ${volume.size}GB - ${volume.status}
+                </label>
+            </div>
+        `).join('');
+    }
+    
+    const modal = new bootstrap.Modal(document.getElementById('volumeSnapshotModal'));
+    modal.show();
+}
+
+// 确认创建云硬盘快照
+function createVolumeSnapshotConfirm() {
+    const selectedVolumes = Array.from(document.querySelectorAll('#volumeSnapshotList input:checked'))
+        .map(input => input.value);
+    
+    if (selectedVolumes.length === 0) {
+        showMessage('错误', '请选择要创建快照的云硬盘');
+        return;
+    }
+    
+    const name = document.getElementById('volumeSnapshotName').value;
+    const description = document.getElementById('volumeSnapshotDescription').value;
+    const force = document.getElementById('volumeSnapshotForce').checked;
+    
+    showLoading();
+    
+    fetch('/api/volume-snapshots', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            volume_ids: selectedVolumes,
+            name: name,
+            description: description,
+            force: force
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        hideLoading();
+        if (data.success) {
+            showMessage('成功', data.message);
+            bootstrap.Modal.getInstance(document.getElementById('volumeSnapshotModal')).hide();
+            refreshData();
+        } else {
+            showMessage('错误', data.error || '创建云硬盘快照失败');
+        }
+    })
+    .catch(error => {
+        hideLoading();
+        showMessage('错误', '创建云硬盘快照失败: ' + error.message);
+    });
+}
+
+// 删除云主机快照
+function deleteServerSnapshot(snapshotId) {
+    if (!confirm('确定要删除这个云主机快照吗？此操作不可恢复。')) {
+        return;
+    }
+    
+    showLoading();
+    
+    fetch(`/api/server-snapshots/${snapshotId}`, {
+        method: 'DELETE'
+    })
+    .then(response => response.json())
+    .then(data => {
+        hideLoading();
+        if (data.success) {
+            showMessage('成功', data.message);
+            refreshData();
+        } else {
+            showMessage('错误', data.error || '删除云主机快照失败');
+        }
+    })
+    .catch(error => {
+        hideLoading();
+        showMessage('错误', '删除云主机快照失败: ' + error.message);
+    });
+}
+
+// 删除云硬盘快照
+function deleteVolumeSnapshot(snapshotId) {
+    if (!confirm('确定要删除这个云硬盘快照吗？此操作不可恢复。')) {
+        return;
+    }
+    
+    showLoading();
+    
+    fetch(`/api/volume-snapshots/${snapshotId}`, {
+        method: 'DELETE'
+    })
+    .then(response => response.json())
+    .then(data => {
+        hideLoading();
+        if (data.success) {
+            showMessage('成功', data.message);
+            refreshData();
+        } else {
+            showMessage('错误', data.error || '删除云硬盘快照失败');
+        }
+    })
+    .catch(error => {
+        hideLoading();
+        showMessage('错误', '删除云硬盘快照失败: ' + error.message);
+    });
+}
+
+// 清理快照
+function cleanupSnapshots() {
+    const cleanupType = document.querySelector('input[name="snapshotCleanupType"]:checked').value;
+    const retentionDays = parseInt(document.getElementById('snapshotRetentionDays').value);
+    
+    if (!retentionDays || retentionDays < 1 || retentionDays > 365) {
+        showMessage('错误', '请输入有效的保留天数（1-365天）');
+        return;
+    }
+    
+    if (!confirm(`确定要清理超过 ${retentionDays} 天的${cleanupType === 'server' ? '云主机' : '云硬盘'}快照吗？此操作不可恢复。`)) {
+        return;
+    }
+    
+    showLoading();
+    
+    const endpoint = cleanupType === 'server' ? '/api/server-snapshots/cleanup' : '/api/volume-snapshots/cleanup';
+    
+    fetch(endpoint, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            retention_days: retentionDays
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        hideLoading();
+        if (data.success) {
+            showMessage('成功', data.message);
+            bootstrap.Modal.getInstance(document.getElementById('snapshotCleanupModal')).hide();
+            refreshData();
+        } else {
+            showMessage('错误', data.error || '清理快照失败');
+        }
+    })
+    .catch(error => {
+        hideLoading();
+        showMessage('错误', '清理快照失败: ' + error.message);
+    });
 } 

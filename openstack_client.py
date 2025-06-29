@@ -271,21 +271,23 @@ class OpenStackClient:
             return {"success": False, "error": str(e)}
     
     def cleanup_backups_by_volume(self, volume_retention_policies):
-        """按云硬盘制定不同清理策略 - 适配OpenStack 28.4.1"""
+        """按云硬盘清理备份 - 支持不同云硬盘的不同保留策略"""
         try:
             all_backups = self.get_backups()
             current_time = datetime.now()
             deleted_count = 0
-            deleted_details = []
+            volume_stats = defaultdict(lambda: {"total": 0, "deleted": 0})
             
             for backup in all_backups:
                 try:
                     volume_id = backup["volume_id"]
-                    retention_days = volume_retention_policies.get(volume_id, 30)  # 默认30天
+                    volume_stats[volume_id]["total"] += 1
+                    
+                    # 获取该云硬盘的保留策略，默认为30天
+                    retention_days = volume_retention_policies.get(volume_id, 30)
                     
                     # 解析备份创建时间
                     backup_time = datetime.fromisoformat(backup["created_at"].replace('Z', '+00:00'))
-                    # 计算备份天数
                     days_old = (current_time - backup_time).days
                     
                     # 如果备份超过指定天数，则删除
@@ -293,14 +295,7 @@ class OpenStackClient:
                         result = self.delete_backup(backup["id"])
                         if result["success"]:
                             deleted_count += 1
-                            deleted_details.append({
-                                "backup_id": backup["id"],
-                                "backup_name": backup["name"],
-                                "volume_id": volume_id,
-                                "days_old": days_old,
-                                "retention_days": retention_days,
-                                "backup_type": backup.get("backup_type", "unknown")
-                            })
+                            volume_stats[volume_id]["deleted"] += 1
                             logger.info(f"删除过期备份: {backup['name']} (云硬盘: {volume_id}, 创建于 {days_old} 天前，超过 {retention_days} 天保留期)")
                         else:
                             logger.error(f"删除过期备份失败: {backup['id']} - {result.get('error')}")
@@ -308,13 +303,300 @@ class OpenStackClient:
                     logger.error(f"处理备份 {backup.get('id')} 时出错: {e}")
                     continue
             
-            logger.info(f"按云硬盘策略清理完成，共删除 {deleted_count} 个过期备份")
+            logger.info(f"按云硬盘清理备份完成，共删除 {deleted_count} 个过期备份")
             return {
                 "success": True, 
                 "deleted_count": deleted_count, 
-                "deleted_details": deleted_details,
-                "policies_applied": volume_retention_policies
+                "volume_stats": dict(volume_stats)
             }
         except Exception as e:
-            logger.error(f"按云硬盘策略清理失败: {e}")
+            logger.error(f"按云硬盘清理备份失败: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def get_system_info(self):
+        """获取系统信息"""
+        try:
+            volumes = self.get_volumes()
+            backups = self.get_backups()
+            servers = self.get_servers()
+            server_snapshots = self.get_server_snapshots()
+            volume_snapshots = self.get_volume_snapshots()
+            
+            # 统计信息
+            volume_stats = {
+                "total": len(volumes),
+                "available": len([v for v in volumes if v["status"] == "available"]),
+                "in_use": len([v for v in volumes if v["status"] == "in-use"]),
+                "error": len([v for v in volumes if v["status"] == "error"]),
+                "creating": len([v for v in volumes if v["status"] == "creating"]),
+                "deleting": len([v for v in volumes if v["status"] == "deleting"])
+            }
+            
+            backup_stats = {
+                "total": len(backups),
+                "full": len([b for b in backups if b.get("backup_type") == "full"]),
+                "incremental": len([b for b in backups if b.get("backup_type") == "incremental"]),
+                "available": len([b for b in backups if b["status"] == "available"]),
+                "creating": len([b for b in backups if b["status"] == "creating"]),
+                "error": len([b for b in backups if b["status"] == "error"])
+            }
+            
+            server_stats = {
+                "total": len(servers),
+                "active": len([s for s in servers if s["status"] == "ACTIVE"]),
+                "shutoff": len([s for s in servers if s["status"] == "SHUTOFF"]),
+                "error": len([s for s in servers if s["status"] == "ERROR"]),
+                "building": len([s for s in servers if s["status"] == "BUILD"]),
+                "deleted": len([s for s in servers if s["status"] == "DELETED"])
+            }
+            
+            snapshot_stats = {
+                "server_snapshots": {
+                    "total": len(server_snapshots),
+                    "active": len([s for s in server_snapshots if s["status"] == "ACTIVE"]),
+                    "creating": len([s for s in server_snapshots if s["status"] == "BUILDING"]),
+                    "error": len([s for s in server_snapshots if s["status"] == "ERROR"])
+                },
+                "volume_snapshots": {
+                    "total": len(volume_snapshots),
+                    "available": len([s for s in volume_snapshots if s["status"] == "available"]),
+                    "creating": len([s for s in volume_snapshots if s["status"] == "creating"]),
+                    "error": len([s for s in volume_snapshots if s["status"] == "error"])
+                }
+            }
+            
+            return {
+                "volumes": volume_stats,
+                "backups": backup_stats,
+                "servers": server_stats,
+                "snapshots": snapshot_stats,
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"获取系统信息失败: {e}")
+            return {"error": str(e)}
+    
+    # ==================== 云主机快照功能 ====================
+    
+    def get_servers(self):
+        """获取所有云主机"""
+        try:
+            servers = []
+            for server in self.conn.compute.servers(details=True):
+                servers.append({
+                    "id": server.id,
+                    "name": server.name,
+                    "status": server.status,
+                    "created_at": server.created_at,
+                    "flavor": {
+                        "id": server.flavor.id,
+                        "name": getattr(server.flavor, 'name', ''),
+                        "ram": server.flavor.ram,
+                        "vcpus": server.flavor.vcpus,
+                        "disk": server.flavor.disk
+                    },
+                    "image": {
+                        "id": server.image.id if server.image else None,
+                        "name": getattr(server.image, 'name', '') if server.image else ''
+                    },
+                    "networks": server.networks,
+                    "availability_zone": getattr(server, 'OS-EXT-AZ:availability_zone', ''),
+                    "power_state": getattr(server, 'OS-EXT-STS:power_state', ''),
+                    "task_state": getattr(server, 'OS-EXT-STS:task_state', ''),
+                    "vm_state": getattr(server, 'OS-EXT-STS:vm_state', ''),
+                    "key_name": getattr(server, 'key_name', ''),
+                    "security_groups": getattr(server, 'security_groups', [])
+                })
+            return servers
+        except Exception as e:
+            logger.error(f"获取云主机列表失败: {e}")
+            return []
+    
+    def get_server_snapshots(self):
+        """获取所有云主机快照"""
+        try:
+            snapshots = []
+            for snapshot in self.conn.compute.snapshots(details=True):
+                snapshots.append({
+                    "id": snapshot.id,
+                    "name": snapshot.name,
+                    "server_id": snapshot.server_id,
+                    "status": snapshot.status,
+                    "created_at": snapshot.created_at,
+                    "updated_at": snapshot.updated_at,
+                    "metadata": getattr(snapshot, 'metadata', {}),
+                    "description": getattr(snapshot, 'description', ''),
+                    "size": getattr(snapshot, 'size', 0),
+                    "min_disk": getattr(snapshot, 'min_disk', 0),
+                    "min_ram": getattr(snapshot, 'min_ram', 0),
+                    "progress": getattr(snapshot, 'progress', 0),
+                    "block_device_mapping": getattr(snapshot, 'block_device_mapping', [])
+                })
+            return snapshots
+        except Exception as e:
+            logger.error(f"获取云主机快照列表失败: {e}")
+            return []
+    
+    def create_server_snapshot(self, server_id, name=None, description=None):
+        """创建云主机快照"""
+        try:
+            if not name:
+                name = f"server-snapshot-{server_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            
+            snapshot = self.conn.compute.create_server_snapshot(
+                server_id,
+                name=name,
+                description=description or f"Server snapshot created at {datetime.now().isoformat()}"
+            )
+            
+            logger.info(f"云主机快照创建成功: {snapshot.id}")
+            return {
+                "id": snapshot.id,
+                "name": snapshot.name,
+                "status": snapshot.status,
+                "success": True
+            }
+        except Exception as e:
+            logger.error(f"创建云主机快照失败: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def delete_server_snapshot(self, snapshot_id):
+        """删除云主机快照"""
+        try:
+            self.conn.compute.delete_server_snapshot(snapshot_id, ignore_missing=True)
+            logger.info(f"云主机快照删除成功: {snapshot_id}")
+            return {"success": True}
+        except Exception as e:
+            logger.error(f"删除云主机快照失败: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def cleanup_server_snapshots(self, retention_days=30):
+        """清理云主机快照"""
+        try:
+            all_snapshots = self.get_server_snapshots()
+            current_time = datetime.now()
+            deleted_count = 0
+            
+            for snapshot in all_snapshots:
+                try:
+                    # 只处理已完成的快照
+                    if snapshot["status"] != "ACTIVE":
+                        continue
+                    
+                    # 解析快照创建时间
+                    snapshot_time = datetime.fromisoformat(snapshot["created_at"].replace('Z', '+00:00'))
+                    days_old = (current_time - snapshot_time).days
+                    
+                    # 如果快照超过指定天数，则删除
+                    if days_old > retention_days:
+                        result = self.delete_server_snapshot(snapshot["id"])
+                        if result["success"]:
+                            deleted_count += 1
+                            logger.info(f"删除过期云主机快照: {snapshot['name']} (创建于 {days_old} 天前，超过 {retention_days} 天保留期)")
+                        else:
+                            logger.error(f"删除过期云主机快照失败: {snapshot['id']} - {result.get('error')}")
+                except Exception as e:
+                    logger.error(f"处理云主机快照 {snapshot.get('id')} 时出错: {e}")
+                    continue
+            
+            logger.info(f"云主机快照清理完成，共删除 {deleted_count} 个超过 {retention_days} 天的过期快照")
+            return {"success": True, "deleted_count": deleted_count, "retention_days": retention_days}
+        except Exception as e:
+            logger.error(f"云主机快照清理失败: {e}")
+            return {"success": False, "error": str(e)}
+    
+    # ==================== 云硬盘快照功能 ====================
+    
+    def get_volume_snapshots(self):
+        """获取所有云硬盘快照"""
+        try:
+            snapshots = []
+            for snapshot in self.conn.block_storage.snapshots(details=True):
+                snapshots.append({
+                    "id": snapshot.id,
+                    "name": snapshot.name,
+                    "volume_id": snapshot.volume_id,
+                    "status": snapshot.status,
+                    "created_at": snapshot.created_at,
+                    "updated_at": snapshot.updated_at,
+                    "metadata": getattr(snapshot, 'metadata', {}),
+                    "description": getattr(snapshot, 'description', ''),
+                    "size": snapshot.size,
+                    "force": getattr(snapshot, 'force', False),
+                    "progress": getattr(snapshot, 'progress', 0),
+                    "user_id": getattr(snapshot, 'user_id', ''),
+                    "project_id": getattr(snapshot, 'project_id', '')
+                })
+            return snapshots
+        except Exception as e:
+            logger.error(f"获取云硬盘快照列表失败: {e}")
+            return []
+    
+    def create_volume_snapshot(self, volume_id, name=None, description=None, force=False):
+        """创建云硬盘快照"""
+        try:
+            if not name:
+                name = f"volume-snapshot-{volume_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            
+            snapshot = self.conn.block_storage.create_snapshot(
+                volume_id=volume_id,
+                name=name,
+                description=description or f"Volume snapshot created at {datetime.now().isoformat()}",
+                force=force
+            )
+            
+            logger.info(f"云硬盘快照创建成功: {snapshot.id}")
+            return {
+                "id": snapshot.id,
+                "name": snapshot.name,
+                "status": snapshot.status,
+                "success": True
+            }
+        except Exception as e:
+            logger.error(f"创建云硬盘快照失败: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def delete_volume_snapshot(self, snapshot_id):
+        """删除云硬盘快照"""
+        try:
+            self.conn.block_storage.delete_snapshot(snapshot_id, ignore_missing=True, force=False)
+            logger.info(f"云硬盘快照删除成功: {snapshot_id}")
+            return {"success": True}
+        except Exception as e:
+            logger.error(f"删除云硬盘快照失败: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def cleanup_volume_snapshots(self, retention_days=30):
+        """清理云硬盘快照"""
+        try:
+            all_snapshots = self.get_volume_snapshots()
+            current_time = datetime.now()
+            deleted_count = 0
+            
+            for snapshot in all_snapshots:
+                try:
+                    # 只处理已完成的快照
+                    if snapshot["status"] != "available":
+                        continue
+                    
+                    # 解析快照创建时间
+                    snapshot_time = datetime.fromisoformat(snapshot["created_at"].replace('Z', '+00:00'))
+                    days_old = (current_time - snapshot_time).days
+                    
+                    # 如果快照超过指定天数，则删除
+                    if days_old > retention_days:
+                        result = self.delete_volume_snapshot(snapshot["id"])
+                        if result["success"]:
+                            deleted_count += 1
+                            logger.info(f"删除过期云硬盘快照: {snapshot['name']} (创建于 {days_old} 天前，超过 {retention_days} 天保留期)")
+                        else:
+                            logger.error(f"删除过期云硬盘快照失败: {snapshot['id']} - {result.get('error')}")
+                except Exception as e:
+                    logger.error(f"处理云硬盘快照 {snapshot.get('id')} 时出错: {e}")
+                    continue
+            
+            logger.info(f"云硬盘快照清理完成，共删除 {deleted_count} 个超过 {retention_days} 天的过期快照")
+            return {"success": True, "deleted_count": deleted_count, "retention_days": retention_days}
+        except Exception as e:
+            logger.error(f"云硬盘快照清理失败: {e}")
             return {"success": False, "error": str(e)} 

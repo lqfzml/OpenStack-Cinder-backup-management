@@ -91,6 +91,19 @@
                         <i class="bi bi-arrow-clockwise"></i> 刷新
                     </button>
                 </div>
+                
+                <!-- 快照操作按钮 -->
+                <div class="btn-group mt-2" role="group">
+                    <button type="button" class="btn btn-outline-primary" onclick="createServerSnapshot()">
+                        <i class="bi bi-camera"></i> 云主机快照
+                    </button>
+                    <button type="button" class="btn btn-outline-success" onclick="createVolumeSnapshot()">
+                        <i class="bi bi-hdd-network"></i> 云硬盘快照
+                    </button>
+                    <button type="button" class="btn btn-outline-warning" onclick="showSnapshotCleanupModal()">
+                        <i class="bi bi-trash"></i> 清理快照
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -228,6 +241,79 @@
                                     </tr>
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 快照列表 -->
+        <div class="row mt-4">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-header">
+                        <ul class="nav nav-tabs card-header-tabs" id="snapshotTabs" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link active" id="server-snapshots-tab" data-bs-toggle="tab" data-bs-target="#server-snapshots" type="button" role="tab">
+                                    <i class="bi bi-camera"></i> 云主机快照
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="volume-snapshots-tab" data-bs-toggle="tab" data-bs-target="#volume-snapshots" type="button" role="tab">
+                                    <i class="bi bi-hdd-network"></i> 云硬盘快照
+                                </button>
+                            </li>
+                        </ul>
+                    </div>
+                    <div class="card-body">
+                        <div class="tab-content" id="snapshotTabContent">
+                            <!-- 云主机快照列表 -->
+                            <div class="tab-pane fade show active" id="server-snapshots" role="tabpanel">
+                                <div class="table-responsive">
+                                    <table class="table table-striped table-hover">
+                                        <thead class="table-primary">
+                                            <tr>
+                                                <th>ID</th>
+                                                <th>名称</th>
+                                                <th>云主机ID</th>
+                                                <th>大小 (GB)</th>
+                                                <th>状态</th>
+                                                <th>创建时间</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="serverSnapshotsTableBody">
+                                            <tr>
+                                                <td colspan="7" class="text-center">正在加载...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            
+                            <!-- 云硬盘快照列表 -->
+                            <div class="tab-pane fade" id="volume-snapshots" role="tabpanel">
+                                <div class="table-responsive">
+                                    <table class="table table-striped table-hover">
+                                        <thead class="table-success">
+                                            <tr>
+                                                <th>ID</th>
+                                                <th>名称</th>
+                                                <th>云硬盘ID</th>
+                                                <th>大小 (GB)</th>
+                                                <th>状态</th>
+                                                <th>创建时间</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="volumeSnapshotsTableBody">
+                                            <tr>
+                                                <td colspan="7" class="text-center">正在加载...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -448,6 +534,137 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 云主机快照创建模态框 -->
+    <div class="modal fade" id="serverSnapshotModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">创建云主机快照</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="serverSnapshotForm">
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="serverSnapshotName" class="form-label">快照名称</label>
+                                <input type="text" class="form-control" id="serverSnapshotName" placeholder="输入快照名称">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="serverSnapshotDescription" class="form-label">快照描述</label>
+                                <input type="text" class="form-control" id="serverSnapshotDescription" placeholder="输入快照描述">
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">选择云主机</label>
+                            <div id="serverSnapshotList" class="border p-3" style="max-height: 200px; overflow-y: auto;">
+                                <div class="text-center text-muted">正在加载云主机列表...</div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="createServerSnapshotConfirm()">创建快照</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 云硬盘快照创建模态框 -->
+    <div class="modal fade" id="volumeSnapshotModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">创建云硬盘快照</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="volumeSnapshotForm">
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="volumeSnapshotName" class="form-label">快照名称</label>
+                                <input type="text" class="form-control" id="volumeSnapshotName" placeholder="输入快照名称">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="volumeSnapshotDescription" class="form-label">快照描述</label>
+                                <input type="text" class="form-control" id="volumeSnapshotDescription" placeholder="输入快照描述">
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="volumeSnapshotForce">
+                                <label class="form-check-label" for="volumeSnapshotForce">
+                                    强制创建（即使云硬盘正在使用中）
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">选择云硬盘</label>
+                            <div id="volumeSnapshotList" class="border p-3" style="max-height: 200px; overflow-y: auto;">
+                                <div class="text-center text-muted">正在加载云硬盘列表...</div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="createVolumeSnapshotConfirm()">创建快照</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 快照清理模态框 -->
+    <div class="modal fade" id="snapshotCleanupModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">清理快照</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="snapshotCleanupForm">
+                        <div class="mb-3">
+                            <label class="form-label">清理类型</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="snapshotCleanupType" id="cleanupServerSnapshots" value="server" checked>
+                                <label class="form-check-label" for="cleanupServerSnapshots">
+                                    清理云主机快照
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="snapshotCleanupType" id="cleanupVolumeSnapshots" value="volume">
+                                <label class="form-check-label" for="cleanupVolumeSnapshots">
+                                    清理云硬盘快照
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="snapshotRetentionDays" class="form-label">保留天数</label>
+                            <input type="number" class="form-control" id="snapshotRetentionDays" 
+                                   value="30" min="1" max="365" 
+                                   placeholder="输入保留天数（1-365天）">
+                            <div class="form-text">超过指定天数的快照将被自动删除</div>
+                        </div>
+                        
+                        <div class="alert alert-warning">
+                            <i class="bi bi-exclamation-triangle"></i>
+                            <strong>警告：</strong>此操作将永久删除超过指定天数的快照，无法恢复！
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-danger" onclick="cleanupSnapshots()">确认清理</button>
                 </div>
             </div>
         </div>

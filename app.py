@@ -432,35 +432,8 @@ def get_system_info():
         if not openstack_client:
             return jsonify({"error": "OpenStack连接失败"}), 500
         
-        volumes = openstack_client.get_volumes()
-        backups = openstack_client.get_backups()
-        
-        # 统计信息
-        volume_stats = {
-            "total": len(volumes),
-            "available": len([v for v in volumes if v['status'] == 'available']),
-            "in_use": len([v for v in volumes if v['status'] == 'in-use']),
-            "error": len([v for v in volumes if v['status'] == 'error'])
-        }
-        
-        backup_stats = {
-            "total": len(backups),
-            "full": len([b for b in backups if not b['is_incremental']]),
-            "incremental": len([b for b in backups if b['is_incremental']]),
-            "available": len([b for b in backups if b['status'] == 'available']),
-            "creating": len([b for b in backups if b['status'] == 'creating']),
-            "error": len([b for b in backups if b['status'] == 'error'])
-        }
-        
-        return jsonify({
-            "openstack_version": "28.4.1",
-            "volume_stats": volume_stats,
-            "backup_stats": backup_stats,
-            "retention_policy": {
-                "full_backup_retention": Config.FULL_BACKUP_RETENTION,
-                "incremental_backup_retention": Config.INCREMENTAL_BACKUP_RETENTION
-            }
-        })
+        info = openstack_client.get_system_info()
+        return jsonify(info)
     except Exception as e:
         logger.error(f"获取系统信息失败: {e}")
         return jsonify({"error": str(e)}), 500
@@ -549,6 +522,196 @@ def remove_volumes_from_schedule(schedule_id):
             
     except Exception as e:
         logger.error(f"从定时备份移除云硬盘失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ==================== 云主机快照API ====================
+
+@app.route('/api/servers')
+def get_servers():
+    """获取云主机列表"""
+    try:
+        if not openstack_client:
+            return jsonify({"error": "OpenStack连接失败"}), 500
+        
+        servers = openstack_client.get_servers()
+        return jsonify(servers)
+    except Exception as e:
+        logger.error(f"获取云主机列表失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/server-snapshots')
+def get_server_snapshots():
+    """获取云主机快照列表"""
+    try:
+        if not openstack_client:
+            return jsonify({"error": "OpenStack连接失败"}), 500
+        
+        snapshots = openstack_client.get_server_snapshots()
+        return jsonify(snapshots)
+    except Exception as e:
+        logger.error(f"获取云主机快照列表失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/server-snapshots', methods=['POST'])
+def create_server_snapshot():
+    """创建云主机快照"""
+    try:
+        if not openstack_client:
+            return jsonify({"error": "OpenStack连接失败"}), 500
+        
+        data = request.get_json()
+        server_ids = data.get('server_ids', [])
+        name = data.get('name')
+        description = data.get('description')
+        
+        if not server_ids:
+            return jsonify({"error": "请选择要创建快照的云主机"}), 400
+        
+        results = []
+        for server_id in server_ids:
+            result = openstack_client.create_server_snapshot(server_id, name, description)
+            results.append(result)
+        
+        success_count = sum(1 for r in results if r.get('success'))
+        return jsonify({
+            "success": success_count > 0,
+            "results": results,
+            "message": f"成功创建 {success_count} 个云主机快照"
+        })
+    except Exception as e:
+        logger.error(f"创建云主机快照失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/server-snapshots/<snapshot_id>', methods=['DELETE'])
+def delete_server_snapshot(snapshot_id):
+    """删除云主机快照"""
+    try:
+        if not openstack_client:
+            return jsonify({"error": "OpenStack连接失败"}), 500
+        
+        result = openstack_client.delete_server_snapshot(snapshot_id)
+        if result.get('success'):
+            return jsonify({"success": True, "message": "云主机快照删除成功"})
+        else:
+            return jsonify({"error": result.get('error', '删除失败')}), 500
+    except Exception as e:
+        logger.error(f"删除云主机快照失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/server-snapshots/cleanup', methods=['POST'])
+def cleanup_server_snapshots():
+    """清理云主机快照"""
+    try:
+        if not openstack_client:
+            return jsonify({"error": "OpenStack连接失败"}), 500
+        
+        data = request.get_json()
+        retention_days = data.get('retention_days', 30)
+        
+        if not isinstance(retention_days, int) or retention_days < 1 or retention_days > 365:
+            return jsonify({"error": "保留天数必须在1-365之间"}), 400
+        
+        result = openstack_client.cleanup_server_snapshots(retention_days)
+        if result.get('success'):
+            return jsonify({
+                "success": True,
+                "message": f"云主机快照清理完成，删除了 {result.get('deleted_count', 0)} 个超过 {retention_days} 天的快照",
+                "deleted_count": result.get('deleted_count', 0),
+                "retention_days": retention_days
+            })
+        else:
+            return jsonify({"error": result.get('error', '清理失败')}), 500
+    except Exception as e:
+        logger.error(f"清理云主机快照失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ==================== 云硬盘快照API ====================
+
+@app.route('/api/volume-snapshots')
+def get_volume_snapshots():
+    """获取云硬盘快照列表"""
+    try:
+        if not openstack_client:
+            return jsonify({"error": "OpenStack连接失败"}), 500
+        
+        snapshots = openstack_client.get_volume_snapshots()
+        return jsonify(snapshots)
+    except Exception as e:
+        logger.error(f"获取云硬盘快照列表失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/volume-snapshots', methods=['POST'])
+def create_volume_snapshot():
+    """创建云硬盘快照"""
+    try:
+        if not openstack_client:
+            return jsonify({"error": "OpenStack连接失败"}), 500
+        
+        data = request.get_json()
+        volume_ids = data.get('volume_ids', [])
+        name = data.get('name')
+        description = data.get('description')
+        force = data.get('force', False)
+        
+        if not volume_ids:
+            return jsonify({"error": "请选择要创建快照的云硬盘"}), 400
+        
+        results = []
+        for volume_id in volume_ids:
+            result = openstack_client.create_volume_snapshot(volume_id, name, description, force)
+            results.append(result)
+        
+        success_count = sum(1 for r in results if r.get('success'))
+        return jsonify({
+            "success": success_count > 0,
+            "results": results,
+            "message": f"成功创建 {success_count} 个云硬盘快照"
+        })
+    except Exception as e:
+        logger.error(f"创建云硬盘快照失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/volume-snapshots/<snapshot_id>', methods=['DELETE'])
+def delete_volume_snapshot(snapshot_id):
+    """删除云硬盘快照"""
+    try:
+        if not openstack_client:
+            return jsonify({"error": "OpenStack连接失败"}), 500
+        
+        result = openstack_client.delete_volume_snapshot(snapshot_id)
+        if result.get('success'):
+            return jsonify({"success": True, "message": "云硬盘快照删除成功"})
+        else:
+            return jsonify({"error": result.get('error', '删除失败')}), 500
+    except Exception as e:
+        logger.error(f"删除云硬盘快照失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/volume-snapshots/cleanup', methods=['POST'])
+def cleanup_volume_snapshots():
+    """清理云硬盘快照"""
+    try:
+        if not openstack_client:
+            return jsonify({"error": "OpenStack连接失败"}), 500
+        
+        data = request.get_json()
+        retention_days = data.get('retention_days', 30)
+        
+        if not isinstance(retention_days, int) or retention_days < 1 or retention_days > 365:
+            return jsonify({"error": "保留天数必须在1-365之间"}), 400
+        
+        result = openstack_client.cleanup_volume_snapshots(retention_days)
+        if result.get('success'):
+            return jsonify({
+                "success": True,
+                "message": f"云硬盘快照清理完成，删除了 {result.get('deleted_count', 0)} 个超过 {retention_days} 天的快照",
+                "deleted_count": result.get('deleted_count', 0),
+                "retention_days": retention_days
+            })
+        else:
+            return jsonify({"error": result.get('error', '清理失败')}), 500
+    except Exception as e:
+        logger.error(f"清理云硬盘快照失败: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
